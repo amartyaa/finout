@@ -58,16 +58,31 @@ type AWSConnection struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
+type AzureConnection struct {
+	ID             string     `json:"id"`
+	OrgID          string     `json:"org_id"`
+	TenantID       string     `json:"tenant_id"`
+	ClientID       string     `json:"client_id"`
+	ClientSecret   string     `json:"-"` // never expose in API responses
+	SubscriptionID string     `json:"subscription_id"`
+	Status         string     `json:"status"`
+	LastSyncAt     *time.Time `json:"last_sync_at,omitempty"`
+	ErrorMessage   string     `json:"error_message,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 type DailyCost struct {
-	ID          string    `json:"id"`
-	OrgID       string    `json:"org_id"`
-	Date        string    `json:"date"`
-	Service     string    `json:"service"`
-	AccountID   string    `json:"account_id"`
-	Environment string    `json:"environment"`
-	Amount      float64   `json:"amount"`
-	Currency    string    `json:"currency"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	OrgID         string    `json:"org_id"`
+	Date          string    `json:"date"`
+	Service       string    `json:"service"`
+	AccountID     string    `json:"account_id"`
+	Environment   string    `json:"environment"`
+	CloudProvider string    `json:"cloud_provider"`
+	Amount        float64   `json:"amount"`
+	Currency      string    `json:"currency"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Anomaly struct {

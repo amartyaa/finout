@@ -65,6 +65,16 @@ export const aws = {
         apiFetch(`/api/orgs/${orgId}/aws/sync`, { method: 'POST', token }),
 };
 
+// Azure
+export const azure = {
+    connect: (token: string, orgId: string, data: { tenant_id: string; client_id: string; client_secret: string; subscription_id: string }) =>
+        apiFetch(`/api/orgs/${orgId}/azure/connect`, { method: 'POST', body: JSON.stringify(data), token }),
+    status: (token: string, orgId: string) =>
+        apiFetch(`/api/orgs/${orgId}/azure/status`, { token }),
+    sync: (token: string, orgId: string) =>
+        apiFetch(`/api/orgs/${orgId}/azure/sync`, { method: 'POST', token }),
+};
+
 // Insights
 export const insights = {
     overview: (token: string, orgId: string) =>

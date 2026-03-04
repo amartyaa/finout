@@ -82,7 +82,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const navItems = [
         { href: '/dashboard', icon: '📊', label: 'Overview' },
         { href: '/dashboard/insights', icon: '🧠', label: 'AI Insights' },
-        { href: '/dashboard/connections', icon: '☁️', label: 'AWS Connection' },
+        { href: '/dashboard/connections', icon: '☁️', label: 'Cloud Connections' },
     ];
 
     return (

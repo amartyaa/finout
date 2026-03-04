@@ -11,6 +11,7 @@ import (
 
 	"github.com/finops/backend/internal/ai"
 	awsclient "github.com/finops/backend/internal/aws"
+	azureclient "github.com/finops/backend/internal/azure"
 	"github.com/finops/backend/internal/config"
 )
 
@@ -24,16 +25,16 @@ func NewCostSyncWorker(db *pgxpool.Pool, rdb *redis.Client, cfg *config.Config) 
 	return &CostSyncWorker{DB: db, Redis: rdb, Config: cfg}
 }
 
+// Start listens for AWS cost sync jobs
 func (w *CostSyncWorker) Start(ctx context.Context) {
-	log.Println("🔄 Cost sync worker started")
+	log.Println("🔄 AWS cost sync worker started")
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Cost sync worker shutting down")
+			log.Println("AWS cost sync worker shutting down")
 			return
 		default:
-			// Block for up to 5 seconds waiting for a job
 			result, err := w.Redis.BLPop(ctx, 5*time.Second, "jobs:cost_sync").Result()
 			if err != nil {
 				continue
@@ -44,23 +45,57 @@ func (w *CostSyncWorker) Start(ctx context.Context) {
 			}
 
 			orgID := result[1]
-			log.Printf("📊 Starting cost sync for org: %s", orgID)
+			log.Printf("📊 Starting AWS cost sync for org: %s", orgID)
 
-			if err := w.syncCosts(ctx, orgID); err != nil {
-				log.Printf("❌ Cost sync failed for org %s: %v", orgID, err)
+			if err := w.syncAWSCosts(ctx, orgID); err != nil {
+				log.Printf("❌ AWS cost sync failed for org %s: %v", orgID, err)
 				w.DB.Exec(ctx,
 					"UPDATE aws_connections SET status = 'error', error_message = $2, updated_at = NOW() WHERE org_id = $1",
 					orgID, err.Error(),
 				)
 			} else {
-				log.Printf("✅ Cost sync completed for org: %s", orgID)
+				log.Printf("✅ AWS cost sync completed for org: %s", orgID)
 			}
 		}
 	}
 }
 
-func (w *CostSyncWorker) syncCosts(ctx context.Context, orgID string) error {
-	// Get AWS connection details
+// StartAzure listens for Azure cost sync jobs
+func (w *CostSyncWorker) StartAzure(ctx context.Context) {
+	log.Println("🔄 Azure cost sync worker started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Azure cost sync worker shutting down")
+			return
+		default:
+			result, err := w.Redis.BLPop(ctx, 5*time.Second, "jobs:azure_cost_sync").Result()
+			if err != nil {
+				continue
+			}
+
+			if len(result) < 2 {
+				continue
+			}
+
+			orgID := result[1]
+			log.Printf("📊 Starting Azure cost sync for org: %s", orgID)
+
+			if err := w.syncAzureCosts(ctx, orgID); err != nil {
+				log.Printf("❌ Azure cost sync failed for org %s: %v", orgID, err)
+				w.DB.Exec(ctx,
+					"UPDATE azure_connections SET status = 'error', error_message = $2, updated_at = NOW() WHERE org_id = $1",
+					orgID, err.Error(),
+				)
+			} else {
+				log.Printf("✅ Azure cost sync completed for org: %s", orgID)
+			}
+		}
+	}
+}
+
+func (w *CostSyncWorker) syncAWSCosts(ctx context.Context, orgID string) error {
 	var roleARN, externalID string
 	err := w.DB.QueryRow(ctx,
 		"SELECT role_arn, external_id FROM aws_connections WHERE org_id = $1",
@@ -70,37 +105,85 @@ func (w *CostSyncWorker) syncCosts(ctx context.Context, orgID string) error {
 		return fmt.Errorf("no AWS connection found: %w", err)
 	}
 
-	// Fetch last 30 days of costs
 	endDate := time.Now()
 	startDate := endDate.AddDate(0, 0, -30)
 
 	ceClient := awsclient.NewCostExplorerClient(w.Config)
 	costs, err := ceClient.FetchDailyCosts(ctx, roleARN, externalID, startDate, endDate)
 	if err != nil {
-		return fmt.Errorf("failed to fetch costs: %w", err)
+		return fmt.Errorf("failed to fetch AWS costs: %w", err)
 	}
 
-	// Upsert cost data
 	for _, cost := range costs {
 		_, err := w.DB.Exec(ctx,
-			`INSERT INTO daily_costs (org_id, date, service, account_id, amount, currency)
-			 VALUES ($1, $2, $3, $4, $5, $6)
-			 ON CONFLICT (org_id, date, service, account_id) DO UPDATE SET
+			`INSERT INTO daily_costs (org_id, date, service, account_id, amount, currency, cloud_provider)
+			 VALUES ($1, $2, $3, $4, $5, $6, 'aws')
+			 ON CONFLICT (org_id, date, service, account_id, cloud_provider) DO UPDATE SET
 			   amount = $5, currency = $6`,
 			orgID, cost.Date, cost.Service, cost.AccountID, cost.Amount, cost.Currency,
 		)
 		if err != nil {
-			log.Printf("Warning: failed to upsert cost entry: %v", err)
+			log.Printf("Warning: failed to upsert AWS cost entry: %v", err)
 		}
 	}
 
-	// Update connection status
 	w.DB.Exec(ctx,
 		"UPDATE aws_connections SET status = 'connected', last_sync_at = NOW(), error_message = '', updated_at = NOW() WHERE org_id = $1",
 		orgID,
 	)
 
-	// Run AI analysis after sync
+	if err := w.runAIAnalysis(ctx, orgID); err != nil {
+		log.Printf("Warning: AI analysis failed for org %s: %v", orgID, err)
+	}
+
+	return nil
+}
+
+func (w *CostSyncWorker) syncAzureCosts(ctx context.Context, orgID string) error {
+	var tenantID, clientID, clientSecret, subscriptionID string
+	err := w.DB.QueryRow(ctx,
+		"SELECT tenant_id, client_id, client_secret, subscription_id FROM azure_connections WHERE org_id = $1",
+		orgID,
+	).Scan(&tenantID, &clientID, &clientSecret, &subscriptionID)
+	if err != nil {
+		return fmt.Errorf("no Azure connection found: %w", err)
+	}
+
+	// Get Azure bearer token
+	authClient := azureclient.NewAuthClient(tenantID, clientID, clientSecret)
+	tokenResp, err := authClient.GetToken("https://management.azure.com/.default")
+	if err != nil {
+		return fmt.Errorf("failed to authenticate with Azure: %w", err)
+	}
+
+	// Fetch costs
+	endDate := time.Now()
+	startDate := endDate.AddDate(0, 0, -30)
+
+	cmClient := azureclient.NewCostManagementClient()
+	costs, err := cmClient.FetchDailyCosts(tokenResp.AccessToken, subscriptionID, startDate, endDate)
+	if err != nil {
+		return fmt.Errorf("failed to fetch Azure costs: %w", err)
+	}
+
+	for _, cost := range costs {
+		_, err := w.DB.Exec(ctx,
+			`INSERT INTO daily_costs (org_id, date, service, account_id, amount, currency, cloud_provider)
+			 VALUES ($1, $2, $3, $4, $5, $6, 'azure')
+			 ON CONFLICT (org_id, date, service, account_id, cloud_provider) DO UPDATE SET
+			   amount = $5, currency = $6`,
+			orgID, cost.Date, cost.Service, cost.AccountID, cost.Amount, cost.Currency,
+		)
+		if err != nil {
+			log.Printf("Warning: failed to upsert Azure cost entry: %v", err)
+		}
+	}
+
+	w.DB.Exec(ctx,
+		"UPDATE azure_connections SET status = 'connected', last_sync_at = NOW(), error_message = '', updated_at = NOW() WHERE org_id = $1",
+		orgID,
+	)
+
 	if err := w.runAIAnalysis(ctx, orgID); err != nil {
 		log.Printf("Warning: AI analysis failed for org %s: %v", orgID, err)
 	}

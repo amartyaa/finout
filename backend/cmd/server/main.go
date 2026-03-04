@@ -58,6 +58,7 @@ func main() {
 	authHandler := &handlers.AuthHandler{DB: db, JWTSecret: cfg.JWTSecret}
 	orgHandler := &handlers.OrgHandler{DB: db}
 	awsHandler := &handlers.AWSHandler{DB: db, Redis: rdb, Config: cfg}
+	azureHandler := &handlers.AzureHandler{DB: db, Redis: rdb}
 	insightsHandler := &handlers.InsightsHandler{DB: db}
 
 	// Start background workers
@@ -66,16 +67,18 @@ func main() {
 
 	costWorker := workers.NewCostSyncWorker(db, rdb, cfg)
 	go costWorker.Start(ctx)
+	go costWorker.StartAzure(ctx)
 
 	// Setup Gin router
 	r := gin.Default()
 
 	// CORS
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000", "http://localhost:3001"},
+		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
+		AllowAllOrigins:  true,
 	}))
 
 	// Health check
@@ -113,6 +116,11 @@ func main() {
 			org.POST("/aws/connect", awsHandler.Connect)
 			org.GET("/aws/status", awsHandler.Status)
 			org.POST("/aws/sync", awsHandler.TriggerSync)
+
+			// Azure Connection
+			org.POST("/azure/connect", azureHandler.Connect)
+			org.GET("/azure/status", azureHandler.Status)
+			org.POST("/azure/sync", azureHandler.TriggerSync)
 
 			// Insights
 			org.GET("/insights/overview", insightsHandler.Overview)
