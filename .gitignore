@@ -1,1 +1,16 @@
 .env
+.secret
+
+# Terraform
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars.local

@@ -1,0 +1,202 @@
+# ──────────────────────────────────────────────────
+# Infrastructure Deployment via Terraform
+# Triggers ONLY when files in infra/ are changed
+# ──────────────────────────────────────────────────
+
+name: Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "infra/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action to perform"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_WORKING_DIR: infra
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  # ── Terraform Plan ───────────────────────────
+
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    outputs:
+      plan_exit_code: ${{ steps.plan.outputs.exitcode }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan \
+            -var="pg_admin_password=${{ secrets.DB_ADMIN_PASSWORD }}" \
+            -var="jwt_secret=${{ secrets.JWT_SECRET }}" \
+            -var="llm_api_key=${{ secrets.LLM_API_KEY }}" \
+            -detailed-exitcode \
+            -out=tfplan \
+            -no-color 2>&1 | tee plan_output.txt
+        continue-on-error: true
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+          retention-days: 5
+
+      # Post plan as PR comment (only on pull requests)
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8');
+
+            // Truncate if too long for a PR comment
+            const maxLength = 60000;
+            const truncated = planOutput.length > maxLength
+              ? planOutput.substring(0, maxLength) + '\n\n... (truncated)'
+              : planOutput;
+
+            const body = `## 🏗️ Terraform Plan
+
+            <details>
+            <summary>Show Plan Output</summary>
+
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+
+            </details>
+
+            **Exit Code:** \`${{ steps.plan.outputs.exitcode }}\`
+            - \`0\` = No changes
+            - \`2\` = Changes detected
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # ── Terraform Apply ──────────────────────────
+
+  apply:
+    name: Terraform Apply
+    needs: plan
+    runs-on: ubuntu-latest
+    # Apply only on push to main OR manual dispatch with 'apply'
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output Resources
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform output -json > terraform_outputs.json
+
+      - name: Upload Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: ${{ env.TF_WORKING_DIR }}/terraform_outputs.json
+          retention-days: 30
+
+  # ── Terraform Destroy (manual only) ─────────
+
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform destroy \
+            -var="pg_admin_password=${{ secrets.DB_ADMIN_PASSWORD }}" \
+            -var="jwt_secret=${{ secrets.JWT_SECRET }}" \
+            -var="llm_api_key=${{ secrets.LLM_API_KEY }}" \
+            -auto-approve
