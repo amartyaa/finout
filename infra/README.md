@@ -88,6 +88,8 @@ The `Infra: Apply` workflow will run automatically.
 | Key Vault | ₹42 |
 | **Total** | **₹3,066–5,166** |
 
+Under the limit of Free Azure Account 😉
+
 ## File Structure
 
 ```

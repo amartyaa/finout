@@ -71,7 +71,7 @@ resource "azurerm_container_app" "backend" {
   }
 
   dynamic "secret" {
-    for_each = local.backend_secrets
+    for_each = { for secret in local.backend_secrets : secret.name => secret }
     content {
       name  = secret.value.name
       value = secret.value.value
@@ -99,7 +99,7 @@ resource "azurerm_container_app" "backend" {
 
       # Secret environment variables
       dynamic "env" {
-        for_each = local.backend_secret_env
+        for_each = { for env in local.backend_secret_env : env.name => env }
         content {
           name        = env.value.name
           secret_name = env.value.secret_name

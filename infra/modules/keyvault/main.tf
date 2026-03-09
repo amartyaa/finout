@@ -8,7 +8,7 @@ resource "azurerm_key_vault" "this" {
   sku_name                   = "standard"
   soft_delete_retention_days = 7
   purge_protection_enabled   = false
-  enable_rbac_authorization  = false
+  rbac_authorization_enabled = false
 
   access_policy {
     tenant_id = var.tenant_id
@@ -23,7 +23,7 @@ resource "azurerm_key_vault" "this" {
 }
 
 resource "azurerm_key_vault_secret" "secrets" {
-  for_each     = var.secrets
+  for_each     = nonsensitive(var.secrets)
   name         = each.key
   value        = each.value
   key_vault_id = azurerm_key_vault.this.id
